@@ -10,6 +10,36 @@ Você coloca **identidade** na frente do FIFA 2026 Tickets: sobe o **gateway YAR
 
 > **Story:** [2.11](../stories/2.11.story.md) · **Decisões:** [ADE-007 v1.1](../architecture/ade-007-identity-external-id.md) · [ADE-004 gateway issuer-agnóstico](../architecture/ade-004-yarp-gateway.md) · **Workflow:** [`lab-quartas-de-final.yml`](../../.github/workflows/lab-quartas-de-final.yml)
 
+> **Regra de ouro (vale para o guia inteiro):** o **Portal / Entra / Google** criam e configuram **toda a infra e identidade à mão** (Fases 1–4). O **GitHub Actions é o ÚLTIMO passo** (Fase 5) e só publica **código** (gateway, frontend) e **schema** (migrations). Ele **não cria recursos Azure**.
+
+---
+
+## Mapa das fases
+
+```
+─── Tudo à mão no Portal / Entra ───────────────────────────────
+Fase 1  Tenant CIAM (External ID) + user flow Email/OTP (+Google opcional)
+Fase 2  App Reg SPA cliente   (CIAM)        ─┐  daqui saem os
+Fase 3  App Reg admin (workforce) + App Role ─┘  4 GUIDs reais Jwt__*
+Fase 4  Infra do gateway: ACR + Environment + Container App + App Settings
+─── Único passo automatizado (precisa do fork) ─────────────────
+Fase 5  Fork + Sync + Actions:  acao=migrations → acao=gateway → acao=frontend
+─── Validação no browser / SQL ─────────────────────────────────
+Fase 6  Login cliente (CIAM) e2e
+Fase 7  Login admin (workforce) + App Role
+Fase 8  Migração users v1 → CIAM (SQL, aditiva — o clímax)
+```
+
+---
+
+## Conceitos (3 ideias)
+
+1. **Dois mundos, dois produtos, duas URLs.** O cliente compra na *bilheteria pública* (qualquer um se cadastra) = **External ID** em `<seu-tenant>.ciamlogin.com`. O funcionário entra pela *portaria de serviço* com o crachá da empresa = **workforce** em `login.microsoftonline.com`.
+2. **Gateway issuer-agnóstico.** Ele valida qualquer token **por discovery** (busca a chave pública do emissor numa URL `.well-known`). Aceitar um novo mundo de identidade é **configuração** (trocar a authority), não código novo.
+3. **Migração aditiva.** Ao "migrar" um usuário antigo pro CIAM, a senha bcrypt **fica intacta**; você só **adiciona** um ponteiro (`users.entra_oid`). O mesmo humano passa a ter duas credenciais independentes — provar isso é o clímax do lab.
+
+> ⚠️ **O engano que quebra o lab:** `ciamlogin.com` **≠** `microsoftonline.com`. Login do cliente em `microsoftonline.com` → `AADSTS50011`. E **nunca** use `b2clogin.com` (Azure AD B2C é legado): este lab é **exclusivamente Entra External ID** (`ciamlogin.com`).
+
 ---
 
 ## Preencha os SEUS valores
@@ -26,7 +56,7 @@ Este lab reusa os recursos das **Oitavas (F1)** e cria os **novos** das Quartas.
 | Resource Group | `<seu-rg>` (reuse o das Oitavas) | ____________________ |
 | SQL Server | `<seu-sql-server>` (DB `FIFA2026Tickets`) | ____________________ |
 | Function App F1 | `<seu-func>` → `https://<seu-func>.azurewebsites.net` | ____________________ |
-| Frontend Web App | `<seu-frontend>` | ____________________ |
+| Frontend Web App | `<seu-frontend>` → `https://<seu-frontend>.azurewebsites.net` | ____________________ |
 | Backend v1 Web App | `<seu-backend>` (intocado — comparação didática) | ____________________ |
 | Container Registry (ACR) | `cr<sufixo>` → `cr<sufixo>.azurecr.io` (só letras/números) | ____________________ |
 | Container Apps Environment | `cae-<sufixo>` | ____________________ |
@@ -44,175 +74,150 @@ Este lab reusa os recursos das **Oitavas (F1)** e cria os **novos** das Quartas.
 
 ---
 
-## Conceitos (5 min)
-
-1. **Dois mundos, dois produtos, duas URLs de login** (tabela do topo). Analogia: o cliente compra na **bilheteria pública** (qualquer um se cadastra) = External ID; o funcionário entra pela **portaria de serviço** com o **crachá** da empresa = workforce.
-2. **O gateway é "issuer-agnóstico":** valida qualquer token **por discovery** (busca a chave pública do emissor numa URL `.well-known`). Aceitar um novo mundo de identidade é **configuração** (trocar a authority), não código novo.
-3. **A migração é ADITIVA:** ao "migrar" um usuário antigo pro CIAM, a senha bcrypt **fica intacta**. Você só **adiciona** um ponteiro (`users.entra_oid`). O mesmo humano passa a ter duas credenciais independentes — provar isso é o clímax do lab.
-
-> ⚠️ **Os dois enganos que quebram o lab:**
-> - **Domínio do cliente:** login do cliente em `login.microsoftonline.com` (em vez de `ciamlogin.com`) → `AADSTS50011`. `ciamlogin.com` ≠ `microsoftonline.com`.
-> - **B2C proibido:** **nunca** use `b2clogin.com` (Azure AD B2C **legado**). Este lab usa **exclusivamente Entra External ID** (`ciamlogin.com`). Se o Portal oferecer B2C, ignore.
-
----
-
-## Ordem das fases
-
-```
-Fase 0  Google (Gemini key — adiantamento p/ o último lab)
-Fase 1  Tenant CIAM (External ID) + user flow + Google/OTP
-Fase 2  App Reg SPA (cliente) no CIAM            ─┐  daqui saem os
-Fase 3  App Reg admin (workforce) + App Role     ─┘  4 GUIDs reais Jwt__*
-Fase 4  Migrations            (Actions: acao=migrations)
-Fase 5  Gateway: provisionar + GUIDs + smoke     (Actions: acao=gateway)
-Fase 6  Frontend             (Actions: acao=frontend, exige VITE_CIAM_*)
-Fase 7  Login CIAM e2e (cliente)
-Fase 8  Login admin e2e
-Fase 9  Migração users v1 → CIAM (hands-on, SQL)
-```
-
-> **Regra de ouro:** o Portal/Entra/Google criam e configuram **infra e identidade** à mão; o GitHub Actions é o **último passo** e só publica **código** (gateway, frontend) e **schema** (migrations). Ele **não cria recursos Azure**.
-
----
-
-## Provisionamento da infra (Fase 5 — à mão, antes do Actions)
-
-A infra do gateway (ACR, Container Apps Environment, Container App) é criada **à mão** (Portal ou `az` no Cloud Shell), **antes** de rodar o workflow. O Actions só publica a imagem depois. Crie com os **seus** nomes (placeholders da tabela acima):
-
-```bash
-# ACR (Basic, admin-enabled) → cr<sufixo>.azurecr.io  (só letras/números no nome)
-az acr create -g <seu-rg> -n cr<sufixo> --sku Basic --admin-enabled true --location <sua-regiao> -o table
-
-# Container Apps Environment
-az containerapp env create -g <seu-rg> -n cae-<sufixo> --location <sua-regiao> -o table
-
-# Container App do gateway (ingress externo, targetPort 8080 — errar aqui = 502)
-az containerapp create -g <seu-rg> -n ca-gateway-<sufixo> \
-  --environment cae-<sufixo> \
-  --image mcr.microsoft.com/k8se/quickstart:latest \
-  --target-port 8080 --ingress external --min-replicas 0 --max-replicas 1 -o table
-
-# Conectar o ACR (admin creds) p/ puxar a imagem real (NÃO imprima ACR_PASS em logs compartilhados)
-ACR_USER=$(az acr credential show -g <seu-rg> -n cr<sufixo> --query username -o tsv)
-ACR_PASS=$(az acr credential show -g <seu-rg> -n cr<sufixo> --query "passwords[0].value" -o tsv)
-az containerapp registry set -g <seu-rg> -n ca-gateway-<sufixo> \
-  --server cr<sufixo>.azurecr.io --username "$ACR_USER" --password "$ACR_PASS" -o table
-```
-
-> A imagem do gateway expõe a **porta 8080** (`src/Fifa2026.V2.Gateway/Dockerfile`: `EXPOSE 8080` + `ASPNETCORE_URLS=http://+:8080`); por isso o **targetPort do ingress = 8080**. O Container App sobe primeiro com imagem placeholder; o workflow `acao=gateway` depois troca pela imagem real SHA-tagged. Depois de criado, anote o **FQDN** (`<gateway-fqdn>`) gerado pelo Azure.
-
----
-
-## Walkthrough
-
-### Fase 0 — Conta Google do lab (Gemini key)
-
-Adiantamento para o **último lab** (chatbot LLM). Como você vai criar a conta Google de qualquer jeito (Fase 1 usa o Google como IdP opcional), já deixe a key pronta.
-
-1. Crie/abra uma conta **Gmail exclusiva do lab** (ex.: `fifa2026.lab.<iniciais>@gmail.com`), em janela anônima.
-2. Acesse **https://aistudio.google.com/apikey** logado nessa conta → aceite os termos.
-3. **Create API key → Create API key in new project** → copie a chave e guarde como `GEMINI_API_KEY` (nunca no código). Modelo do lab: `gemini-2.5-flash`.
-
-✅ **Checkpoint:** conta Gmail do lab criada; Gemini key guardada para depois.
-
----
-
-### Fase 1 — Tenant CIAM (Entra External ID) + user flow
+## Fase 1 — Tenant CIAM (Entra External ID) + user flow
 
 Tudo aqui é no **Microsoft Entra admin center** ([entra.microsoft.com](https://entra.microsoft.com)) — **não** no `portal.azure.com`.
 
-#### 1.1 Criar o tenant External ID (via Azure Subscription)
+### 1.1 Criar o tenant External ID
 
-> ⚠️ Na prática **só aparece "Use Azure Subscription"** — a "30-day free trial" quase nunca é ofertada. Não espere o trial: siga por **Use Azure Subscription**, que não expira em 30 dias e tem **free tier de 50.000 MAU** (um lab fatura ~zero). Confirme o valor vigente em [aka.ms/ExternalIDPricing](https://aka.ms/ExternalIDPricing).
+A criação tem uma **bifurcação**: o Azure oferece duas formas. Leia a tabela, decida UMA e siga só os passos dela.
 
-A conta precisa de privilégio para **criar o tenant** + **Owner/Contributor na subscription**. Pode ser necessário registrar o resource provider:
+| Forma de criar | Quando usar | Precisa de subscription? | Tem etapa de billing (1.2)? |
+|---|---|---|---|
+| **A · 30-day free trial** *(recomendado)* | tenant descartável de aula; mais rápido | **Não** | **Não** (pule a 1.2) |
+| **B · Use Azure Subscription** | se o trial **não aparecer** ou se quiser um tenant que não expira | **Sim** (`<sua-subscription>` + `<seu-rg>`) | **Sim** (faça a 1.2) |
 
-```bash
-az provider register -n Microsoft.AzureActiveDirectory
-```
+Permissão: sua conta precisa do papel **Tenant Creator** na subscription (e **Contributor/Owner** para a Opção B). Se a criação falhar com erro de provider, registre uma vez: `az provider register -n Microsoft.AzureActiveDirectory`.
 
-1. Em [entra.microsoft.com](https://entra.microsoft.com): **Entra ID → Overview → Manage tenants → `Create`**.
-2. **External → Continue → Use Azure Subscription**.
-3. Preencha: **Subscription** `<sua-subscription>`; **Resource Group** (reuse `<seu-rg>` ou crie um dedicado); **Location** (⚠️ **não muda depois**); **Nome + domínio** `<seu-tenant>.onmicrosoft.com`.
-4. Criação leva **até 30 min** (acompanhe em **Notifications**).
-5. Troque para o tenant novo: engrenagem (**Settings**) → **Directories + subscriptions → Switch**. Em **Tenant overview**, anote **Tenant ID** e **Primary domain** (`<seu-tenant>.ciamlogin.com`).
+**Passos comuns (A e B):**
 
-✅ **Checkpoint:** tenant CIAM criado; domínio `*.ciamlogin.com` confirmado; **Tenant ID** anotado (= `Jwt__CiamTenantId` = `<CiamTenantId>`).
+1. Acesse [entra.microsoft.com](https://entra.microsoft.com) e faça login.
+2. Vá em **Entra ID → Overview → Manage tenants**.
+3. Clique em **`Create`**.
+4. Selecione **External** e clique em **Continue**.
+5. Escolha **30-day free trial** (Opção A) ou **Use Azure Subscription** (Opção B).
 
-#### 1.2 Vincular a subscription (billing)
+**Opção A — 30-day free trial:**
 
-Logo após criar, o **Tenant Overview** pode mostrar o aviso *"An Azure subscription is required to continue receiving SLA support"*. Isso só significa que o tenant precisa estar vinculado a uma subscription para billing (não é cobrança — o free tier cobre o lab).
+6. Preencha **Tenant Name** (`<seu-tenant>`) e **Domain Name** (`<seu-tenant>` → vira `<seu-tenant>.onmicrosoft.com`).
+7. Selecione a **Location**.
+8. Confirme e crie (pode levar até 30 min; acompanhe no sino **Notifications**). **Pule a 1.2.**
 
-- Vá em **Home → Billing**: se o **subscription ID já aparece**, está OK (criar via "Use Azure Subscription" normalmente já vincula) → **nada a fazer**.
-- Se **não** aparece: **Click here to upgrade → Add Subscription** → escolha `<sua-subscription>` + resource group → confirme.
+**Opção B — Use Azure Subscription:**
 
-✅ **Checkpoint:** **Home → Billing** mostra um subscription ID vinculado.
+6. Preencha **Tenant Name** (`<seu-tenant>`) e **Domain Name** (`<seu-tenant>`).
+7. Selecione **Country/Region**.
+8. Clique em **Next: Add a subscription** → escolha `<sua-subscription>` e `<seu-rg>`.
+9. **Review + Create → Create** (pode levar até 30 min). Depois faça a **1.2**.
 
-#### 1.3 Criar o user flow (sign-up/sign-in)
+**Trocar para o tenant recém-criado (A e B):**
 
-1. **Entra ID → External Identities → User flows → `New user flow`**.
+10. Ícone de engrenagem **Settings → Directories + subscriptions**.
+11. Em **Directory name**, localize o `<seu-tenant>` e clique em **Switch**.
+12. Vá em **Tenant overview → Overview** e anote o **Tenant ID** (= `Jwt__CiamTenantId` = `<CiamTenantId>`) e o **Primary domain**. O host de login do cliente é o subdomínio com `.ciamlogin.com` → `<seu-tenant>.ciamlogin.com`.
+
+> 💡 **Location não muda depois** — escolha certo na criação.
+
+### 1.2 Billing — só na Opção B (na prática, nada a fazer)
+
+O vínculo é **subscription → tenant**, não tenant↔tenant. Quem criou pela **Opção B já está vinculado** (aconteceu ao escolher a subscription na criação). O aviso *"An Azure subscription is required… SLA"* é **informativo**, não é cobrança e **não bloqueia** o lab. Para apenas conferir, vá no **tenant workforce** (dono da subscription): **External Identities → Overview → Subscriptions → Linked subscriptions**.
+
+### 1.3 Criar o user flow (sign-up/sign-in)
+
+1. **External Identities → User flows → `New user flow`**.
 2. **Name** (ex.: `SignUpSignIn`).
-3. **Identity providers:** marque **Email Accounts → Email one-time passcode** (OTP — fallback de zero dependência).
-4. **User attributes:** escolha o que coletar (email, display name…) → **Create**.
+3. **Identity providers:** marque **Email Accounts → Email one-time passcode** (OTP).
+4. **User attributes:** escolha o que coletar → **Create**.
 
-✅ **Checkpoint:** user flow com Email+OTP funcionando (cobre o lab inteiro sem dependência externa).
+### 1.4 Google como Identity Provider — OPCIONAL
 
-#### 1.4 Adicionar o Google como Identity Provider — OPCIONAL
+Pule se quiser: o **Email OTP** já cobre o lab inteiro. Para login social, crie o OAuth client no **[Apêndice 2](#apêndice-2--google-oauth-opcional)** e volte com Client ID + secret. Depois: **All identity providers → Built-in → Google → Configure** (cole ID/secret → Save) e ative no **User flow → Settings → Identity providers → Google → Save**.
 
-> 🟢 **Pule esta seção se quiser.** O **Email OTP** da Fase 1.3 já cobre o lab inteiro, sem nenhuma dependência externa. Só faça se quiser **login social com Google**; caso contrário, vá direto para a **Fase 2**.
+✅ **Checkpoint:** tenant CIAM criado e **selecionado** (canto superior mostra `<seu-tenant>`); **Tenant ID** anotado (= `<CiamTenantId>`); login do cliente em `<seu-tenant>.ciamlogin.com`; user flow Email+OTP ativo.
 
-**Pré-requisito:** Client ID + Client secret do OAuth client do Google (crie no **[Apêndice 3](#apêndice-3--google-oauth-opcional)**, que usa o seu Tenant ID da 1.1) e volte com os dois valores.
-
-1. No tenant CIAM: **Entra ID → External Identities → All identity providers → aba Built-in**. Ao lado de **Google**, **Configure**.
-2. Preencha **Name** (`Google`), cole **Client ID** e **Client secret** → **Save**.
-3. Ative no user flow: **External Identities → User flows →** seu flow **→ Settings → Identity providers →** marque **Google → Save**.
-
-✅ **Checkpoint:** na tela de login do CIAM aparece "Continuar com Google", com email+OTP ainda como caminho principal.
+➡️ **Próximo:** registrar a App do **cliente** dentro deste mesmo tenant CIAM.
 
 ---
 
-### Fase 2 — App Registration SPA (cliente) no tenant CIAM
+## Fase 2 — App Registration SPA (cliente) no tenant CIAM
 
-1. No tenant CIAM: **Entra ID → App registrations → `New registration`**.
-2. **Name:** `student-<iniciais>-v2` · **Account types:** single-tenant.
-3. **Register** → na **Overview**, anote **Application (client) ID** (= `Jwt__CiamClientId` e `VITE_CIAM_CLIENT_ID`).
-4. **Authentication → Add a platform → Single-page application** → **Redirect URI:** `http://localhost:5173` **e** a URL de prod (`https://<seu-frontend>.azurewebsites.net`). **NÃO** crie client secret (SPA é público, usa PKCE). Se escolher "Web" por engano, corrija no **Manifest**.
-5. Vincule ao user flow: **External Identities → User flows →** o flow **→ Use → Applications → `Add application`** → `student-<iniciais>-v2` → **Select**. (Há um app `b2c-extensions-app` na lista — **não apague**.)
+Confirme no topo do Entra admin center que você está no tenant **CIAM** (`*.ciamlogin.com`).
 
-✅ **Checkpoint:** App Reg SPA no CIAM; **client ID** anotado; redirect SPA + vínculo ao user flow. Confirme `*.ciamlogin.com` no topo do Entra admin center (não criar no workforce por engano).
+1. **Entra ID → App registrations → `New registration`**.
+2. **Name:** `student-<iniciais>-v2` · **Account types:** single-tenant → **Register**.
+3. Na **Overview**, anote **Application (client) ID** (= `Jwt__CiamClientId` e `VITE_CIAM_CLIENT_ID`).
+4. **Authentication → Add a platform → Single-page application (SPA)**.
+5. Em **Redirect URIs**, adicione os **dois** abaixo (sem barra final, sem path):
+   - `https://<seu-frontend>.azurewebsites.net`
+   - `http://localhost:5173`
+6. **NÃO** crie client secret (SPA é público, usa PKCE) → **Save**.
+7. Vincule ao user flow: **External Identities → User flows →** o flow **→ Use → Applications → `Add application`** → `student-<iniciais>-v2` → **Select**.
+
+> ⚠️ Plataforma tem de ser **Single-page application (SPA)**, **não** *Web*. O frontend faz login com `redirectUri = window.location.origin` (o mesmo SPA serve prod e local) — por isso os dois URIs exatos acima. Se escolher "Web" por engano, corrija no **Manifest**. Há um app `b2c-extensions-app` na lista — **não apague**.
+
+✅ **Checkpoint:** App Reg SPA no CIAM; **client ID** anotado; redirect SPA com os 2 URIs; vínculo ao user flow feito.
+
+➡️ **Próximo:** o segundo mundo — a App do **admin** no tenant workforce.
 
 ---
 
-### Fase 3 — App Registration admin (workforce) + App Role `Admin`
+## Fase 3 — App Registration admin (workforce) + App Role `Admin`
 
-> Segundo mundo. ⚠️ Troque para o tenant **workforce** (domínio `*.onmicrosoft.com`, **não** `ciamlogin.com`).
+Troque para o tenant **workforce** (domínio `*.onmicrosoft.com`, **não** `ciamlogin.com`).
 
 1. **Entra ID → App registrations → `New registration`** → Name `student-<iniciais>-admin` → single-tenant → **Register**.
-2. Anote **Application (client) ID** (= `Jwt__AdminClientId`) e **Directory (tenant) ID** (= `Jwt__AdminTenantId` = `<AdminTenantId>`, é o **workforce**, diferente do CIAM).
-3. **App roles → `Create app role`**: Display `Admin` · Allowed member types **Users/Groups** · **Value `Admin`** · habilitada → **Apply**. (Decisão do owner: uma única App Role.)
-4. Atribua: **Enterprise applications →** `student-<iniciais>-admin` **→ Users and groups → `Add user/group`** → seu admin → role `Admin` → **Assign**.
+2. Anote **Application (client) ID** (= `Jwt__AdminClientId`) e **Directory (tenant) ID** (= `Jwt__AdminTenantId` = `<AdminTenantId>`, o **workforce**, diferente do CIAM).
+3. **Authentication → Add a platform → Single-page application (SPA)** → adicione os **mesmos dois** redirect URIs (sem barra final, sem path):
+   - `https://<seu-frontend>.azurewebsites.net`
+   - `http://localhost:5173`
+4. **App roles → `Create app role`**: Display `Admin` · Allowed member types **Users/Groups** · **Value `Admin`** · habilitada → **Apply**.
+5. Atribua: **Enterprise applications →** `student-<iniciais>-admin` **→ Users and groups → `Add user/group`** → seu admin → role `Admin` → **Assign**.
 
-✅ **Checkpoint:** App Reg admin no workforce; App Role `Admin` criada e **atribuída**. Agora você tem os **4 GUIDs reais** `Jwt__*` (CIAM tenant/client + admin tenant/client).
+> ⚠️ O admin usa o **mesmo SPA** do cliente (`redirectUri = window.location.origin`), por isso esta App Reg workforce precisa **dos mesmos** redirect URIs SPA da Fase 2. Sem eles o login do admin falha com `AADSTS50011`.
 
----
+✅ **Checkpoint:** App Reg admin no workforce com redirect SPA; App Role `Admin` criada e **atribuída**. Agora você tem os **4 GUIDs reais** `Jwt__*` (CIAM tenant/client + admin tenant/client).
 
-### Fase 4 — Migrations do banco
-
-> Das Oitavas você já tinha `phase-01` e `phase-03`; a migration **NOVA das Quartas** é `phase-04-ciam-link.sql` (cria `users.entra_oid` **vazia**). O **preenchimento** é o hands-on da [Fase 9](#fase-9--migração-users-v1--ciam-hands-on--o-clímax) — de propósito, **não** roda no workflow.
-
-Confirme os Secrets/Vars do [Apêndice 1](#apêndice-1--vars-e-secrets-do-github) e **Actions → "Lab Quartas de Final" → Run workflow → `acao = migrations`** → branch `phase-04-quartas`. O workflow abre acesso público + firewall temporário ao SQL (privado), aplica as 3 migrations e **reverte** o acesso ao final (mesmo em falha). Idempotente (pode repetir).
-
-✅ **Checkpoint:** workflow verde; `users.entra_oid` existe (vazia) + índice `UQ_users_entra_oid`.
+➡️ **Próximo:** criar a infra do gateway no Portal e plugar esses 4 GUIDs.
 
 ---
 
-### Fase 5 — Gateway YARP: GUIDs + smoke
+## Fase 4 — Infra do gateway no Portal (ACR + Environment + Container App)
 
-> Pré-requisito: infra provisionada (ver [Provisionamento da infra](#provisionamento-da-infra-fase-5--à-mão-antes-do-actions)) e Fases 1–3 feitas (para ter os 4 GUIDs reais).
+Esta é a **única fonte** do provisionamento do gateway. Tudo à mão no **[portal.azure.com](https://portal.azure.com)** (⚠️ **não** no `entra.microsoft.com` desta vez). Confirme no topo que está na **`<sua-subscription>`** e no **`<seu-rg>`**. O GitHub Actions só entra na Fase 5 (publica a imagem).
 
-#### 5.1 App Settings de identidade
+### 4.1 Criar o Azure Container Registry (ACR)
 
-O gateway só sobe com as 4 `Jwt__*` presentes (**fail-closed**). As 6 env vars do Container App:
+1. Busca do topo → **Container registries** → **`+ Create`**.
+2. Aba **Basics**:
+   - **Subscription:** `<sua-subscription>` · **Resource group:** `<seu-rg>`.
+   - **Registry name:** `cr<sufixo>` (só letras/números, único globalmente → `cr<sufixo>.azurecr.io`).
+   - **Location:** `<sua-regiao>` · **SKU:** **Basic**.
+3. **Review + create → Create → Go to resource**.
+4. **Settings → Access keys** → ligue **Admin user** = **Enabled**.
+5. Anote **Login server** (`cr<sufixo>.azurecr.io`), **Username** e uma **password**.
+
+### 4.2 Criar o Container Apps Environment
+
+1. Busca do topo → **Container Apps** → **`+ Create`** (abre o assistente do Container App).
+2. Aba **Basics**, em **Container Apps Environment**, clique em **`Create new`**.
+3. **Environment name:** `cae-<sufixo>` · **Region:** `<sua-regiao>` → **Create** (volta ao Basics já com o env selecionado).
+
+### 4.3 Criar o Container App do gateway
+
+Suba com **imagem placeholder pública** — a imagem real vem pelo Actions (Fase 5).
+
+1. Aba **Basics:** **Subscription** `<sua-subscription>` · **Resource group** `<seu-rg>` · **Container app name** `ca-gateway-<sufixo>` · **Environment** `cae-<sufixo>` → **Next: Container**.
+2. Aba **Container:** mantenha **Use quickstart image** marcada (ACR ainda vazio). CPU/memória no menor preset → **Next: Ingress**.
+3. Aba **Ingress:** **Ingress** = **Enabled** · **Ingress traffic** = **Accepting traffic from anywhere** · **Target port** = **`8080`**.
+4. **Review + create → Create → Go to resource**.
+5. Na **Overview**, copie a **Application Url** — é o seu **`<gateway-fqdn>`** (vira a Variable `GATEWAY_V2_URL`).
+6. **Settings → Registries → `+ Add`** → **Registry** = `cr<sufixo>.azurecr.io` → **Authentication** = **Admin Credentials** → **Save**.
+
+> ⚠️ **Target port = 8080** é crítico: a imagem do gateway expõe a porta **8080** (`Dockerfile`: `EXPOSE 8080` + `ASPNETCORE_URLS=http://+:8080`). Qualquer outro valor = **502** em tudo.
+
+### 4.4 App Settings de identidade (gateway é fail-closed)
+
+O gateway **só sobe com as 4 `Jwt__*` presentes**. No Container App: **Application → Containers → `Edit and deploy`** → selecione o container → aba **Environment variables** → adicione as 6 (Source = Manual entry) → **Save → Create**:
 
 | App Setting | Valor |
 |---|---|
@@ -223,32 +228,51 @@ O gateway só sobe com as 4 `Jwt__*` presentes (**fail-closed**). As 6 env vars 
 | `FunctionAppF1Url` | `https://<seu-func>.azurewebsites.net` (sem ela `/purchase` dá 502) |
 | `Gateway__FrontendOrigin` | `https://<seu-frontend>.azurewebsites.net` (CORS restrito ao front) |
 
-> 🔒 **Duplo underscore:** `Jwt:CiamTenantId` em variável de ambiente vira `Jwt__CiamTenantId`. A connection string do SQL **NÃO** vai no gateway (fica na Function).
-> **Discovery que o gateway monta:** authority `https://<seu-tenant>.ciamlogin.com/<CiamTenantId>`, issuer `…/v2.0`; admin `https://login.microsoftonline.com/<AdminTenantId>/v2.0`. Validação fail-closed, `ClockSkew=0`, `ValidIssuer`/`ValidAudiences` explícitos.
+> 🔒 **Duplo underscore:** `Jwt:CiamTenantId` na config vira `Jwt__CiamTenantId` em env var (o `:` não é válido). A connection string do SQL **NÃO** vai no gateway (fica na Function). Para só testar a infra antes de ter os GUIDs reais, pode usar 4 GUIDs placeholder (válidos em forma): o gateway sobe e o `401` sem token já funciona; o fluxo com token real só fecha com os 4 GUIDs reais.
 
-> 💡 Se você subiu o Container App só para testar a infra antes de ter os GUIDs reais, pode usar **GUIDs placeholder** (válidos em forma) — o gateway sobe e o `401` sem token já funciona. O fluxo com **token real** só fecha com os 4 GUIDs reais.
+> 💡 **Alternativa CLI (Cloud Shell)** — toda a Fase 4 em um bloco (⚠️ não imprima a senha em logs compartilhados):
+> ```bash
+> az acr create -g <seu-rg> -n cr<sufixo> --sku Basic --admin-enabled true --location <sua-regiao> -o table
+> az containerapp env create -g <seu-rg> -n cae-<sufixo> --location <sua-regiao> -o table
+> az containerapp create -g <seu-rg> -n ca-gateway-<sufixo> \
+>   --environment cae-<sufixo> --image mcr.microsoft.com/k8se/quickstart:latest \
+>   --target-port 8080 --ingress external --min-replicas 0 --max-replicas 1 -o table
+> ACR_USER=$(az acr credential show -g <seu-rg> -n cr<sufixo> --query username -o tsv)
+> ACR_PASS=$(az acr credential show -g <seu-rg> -n cr<sufixo> --query "passwords[0].value" -o tsv)
+> az containerapp registry set -g <seu-rg> -n ca-gateway-<sufixo> \
+>   --server cr<sufixo>.azurecr.io --username "$ACR_USER" --password "$ACR_PASS" -o table
+> az containerapp update -g <seu-rg> -n ca-gateway-<sufixo> --set-env-vars \
+>   "Jwt__CiamTenantId=<CiamTenantId>" "Jwt__CiamClientId=<CLIENT_ID_SPA_CIAM>" \
+>   "Jwt__AdminTenantId=<AdminTenantId>" "Jwt__AdminClientId=<CLIENT_ID_ADMIN>" \
+>   "FunctionAppF1Url=https://<seu-func>.azurewebsites.net" \
+>   "Gateway__FrontendOrigin=https://<seu-frontend>.azurewebsites.net" -o table
+> ```
 
-#### 5.2 Configurar os 4 GUIDs reais
+✅ **Checkpoint:** ACR `cr<sufixo>` (Admin Enabled), Environment `cae-<sufixo>`, Container App `ca-gateway-<sufixo>` rodando (placeholder) com **ingress externo na porta 8080**, **Application Url** anotada (= `<gateway-fqdn>` = `GATEWAY_V2_URL`), **ACR conectado** nas Registries e as **6 App Settings** presentes (4 `Jwt__*` com os GUIDs das Fases 1–3).
 
-Com os 4 GUIDs reais em mãos (Fases 1–3):
+➡️ **Próximo:** com tudo provisionado à mão, agora — e só agora — entra o GitHub Actions.
 
-```bash
-az containerapp update -g <seu-rg> -n ca-gateway-<sufixo> --set-env-vars \
-  "Jwt__CiamTenantId=<CiamTenantId>" \
-  "Jwt__CiamClientId=<CLIENT_ID_SPA_CIAM>" \
-  "Jwt__AdminTenantId=<AdminTenantId>" \
-  "Jwt__AdminClientId=<CLIENT_ID_ADMIN>" -o table
-```
+---
 
-> **Portal:** Container App → **Containers → Edit and deploy → Environment variables** → ajuste os 4 valores → **Save** (gera nova revisão).
+## Fase 5 — Fork + Sync + Actions (o único passo automatizado)
 
-#### 5.3 Deploy do código do gateway (Actions `acao=gateway`)
+Toda a infra acima foi criada **à mão**. Este é o **último bloco de deploy**: o Actions só **constrói e publica código** (schema + imagens). Precisa do **fork** porque é nele que ficam o workflow e os Secrets/Vars.
 
-O workflow faz `dotnet build/test` (+ projeto de Tests), build & push da imagem no ACR e `az containerapp update --image` (troca o placeholder pela imagem real) + smoke. Imagem: `cr<sufixo>.azurecr.io/gateway:<sha>`. Re-rode (**`acao = gateway`**) só se trocar o código.
+### 5.1 Preparar o fork
 
-> 📝 O cache de borda (AC-6) usa um `XCacheMiddleware`/`IMemoryCache` (o `OutputCache` nativo não captura respostas proxied pelo YARP). Suíte: **17/17**.
+1. Você reusa o **fork das Oitavas**. Abra-o no GitHub → **Sync fork** para trazer a branch nova **`phase-04-quartas`** (e as migrations das Quartas) do upstream.
+2. Se **ainda não tem fork**: forke o repo **com TODAS as branches** (na tela de fork, **desmarque** *Copy the `main` branch only*).
+3. Confirme os **Secrets e Variables** do Actions conforme o **[Apêndice 1](#apêndice-1--vars-e-secrets-do-github)** (nomes exatos).
 
-#### 5.4 Smoke test
+### 5.2 Rodar o workflow — nesta ordem
+
+Sempre em **Actions → "Lab Quartas de Final" → Run workflow → branch `phase-04-quartas`**, variando o `acao`:
+
+1. **`acao = migrations`** — aplica `phase-01`, `phase-03` e a **nova `phase-04-ciam-link.sql`** (cria `users.entra_oid` **vazia** + índice `UQ_users_entra_oid`). O workflow abre/reverte acesso temporário ao SQL privado (idempotente; pode repetir). O **preenchimento** da coluna é o hands-on da [Fase 8](#fase-8--migração-users-v1--ciam-sql--o-clímax) — de propósito **não** roda aqui.
+2. **`acao = gateway`** — `dotnet build/test`, **build & push** da imagem no ACR (`cr<sufixo>.azurecr.io/gateway:<sha>`) e `az containerapp update --image` (troca o placeholder pela imagem real) + smoke. Re-rode só quando trocar o código.
+3. **`acao = frontend`** — antes, garanta **SCM Basic Auth `On`** no Web App do frontend e capture o `AZURE_FRONTEND_PUBLISH_PROFILE` **depois** disso; configure `VITE_CIAM_AUTHORITY` e `VITE_CIAM_CLIENT_ID`. O job faz `npm ci` + `vite build` (com `VITE_CIAM_*`) + deploy.
+
+### 5.3 Smoke do gateway
 
 ```bash
 FQDN="<gateway-fqdn>"
@@ -260,25 +284,15 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://${FQDN}/purchase" \
 # → 401   (fail-closed: sem token o gateway recusa)
 ```
 
-✅ **Checkpoint:** `/health` = 200; `POST /purchase` sem token = **401**. O `401` já funciona **mesmo com GUIDs placeholder** — prova a infra. O fluxo com **token real** exige a 5.2 + Fases 1–3. As políticas (rate-limit 5/min → 429, cache `X-Cache HIT` em GET, CORS) estão no código — demonstre com token real.
+> ⚠️ Authority do frontend em `login.microsoftonline.com` → `AADSTS50011`. Como `ciamlogin.com` é authority "non-AAD", o MSAL exige `knownAuthorities: ['<seu-tenant>.ciamlogin.com']` (o `authV2.ts` já contempla). `VITE_CIAM_AUTHORITY` aponta para `https://<seu-tenant>.ciamlogin.com/`.
+
+✅ **Checkpoint:** três jobs verdes; `/health` = 200; `POST /purchase` sem token = **401**; revisão ativa do Container App aponta para `cr<sufixo>.azurecr.io/gateway:<sha>` (não mais o placeholder); frontend publicado com a authority CIAM embutida.
+
+➡️ **Próximo:** validar o login real no browser.
 
 ---
 
-### Fase 6 — Frontend: authority CIAM + publicar (Actions `acao=frontend`)
-
-> Depende do tenant CIAM (`VITE_CIAM_*`).
-
-1. Garanta **SCM Basic Auth `On`** no Web App do frontend e capture o `AZURE_FRONTEND_PUBLISH_PROFILE` **depois** disso.
-2. Configure `VITE_CIAM_AUTHORITY` e `VITE_CIAM_CLIENT_ID` no fork (as demais Vars já existem — [Apêndice 1](#apêndice-1--vars-e-secrets-do-github)).
-3. **Run workflow → `acao = frontend`** (`npm ci` + `vite build` com `VITE_CIAM_*` + deploy no Web App).
-
-> ⚠️ Authority em `login.microsoftonline.com` → `AADSTS50011`. Como `ciamlogin.com` é authority "non-AAD", o MSAL exige `knownAuthorities: ['<seu-tenant>.ciamlogin.com']` (o `authV2.ts` já contempla).
-
-✅ **Checkpoint:** frontend publicado com a authority CIAM embutida.
-
----
-
-### Fase 7 — Login CIAM + smoke ponta-a-ponta (clímax do cliente)
+## Fase 6 — Login do cliente (CIAM) e2e
 
 1. Abra o frontend → **Entrar (v2)** → redireciona para `<seu-tenant>.ciamlogin.com`.
 2. **Sign-up self-service:** "Continuar com Google" **ou** email + **OTP**.
@@ -289,50 +303,52 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://${FQDN}/purchase" \
    FROM dbo.purchases WHERE entra_oid IS NOT NULL ORDER BY id DESC;
    ```
 
-> 🔎 **GATE — confirme em runtime:** cole o access token em [jwt.ms](https://jwt.ms) e verifique o **formato exato** do `iss` (termina em `…/v2.0`), o `aud` (= seu client ID) e o claim `oid`. É aqui que você trava o formato do issuer CIAM e o `knownAuthorities`. Nunca cole tokens de produção — em sala é trial descartável.
+> ⚠️ **GATE — confirme em runtime:** cole o access token em [jwt.ms](https://jwt.ms) e verifique o **formato exato** do `iss` (termina em `…/v2.0`), o `aud` (= seu client ID) e o claim `oid`. É aqui que você trava o formato do issuer CIAM e o `knownAuthorities`. Nunca cole tokens de produção — em sala é trial descartável.
 
 ✅ **Checkpoint (AC-11):** login CIAM → gateway valida → `X-Entra-OID` propagado → `purchases.entra_oid` (origem CIAM) gravado ao lado de registros v1.
 
-> ☕ **PONTO DE PAUSA NATURAL** — se dividir em dois encontros, encerre aqui (cliente CIAM real validado pelo gateway = uma aula completa).
+➡️ **Próximo:** o segundo mundo — login do admin.
+
+> ☕ **Ponto de pausa natural** — se dividir em dois encontros, encerre aqui (cliente CIAM real validado pelo gateway = uma aula completa).
 
 ---
 
-### Fase 8 — Admin workforce + segundo emissor
+## Fase 7 — Login do admin (workforce) + App Role
 
-> Pré-condição: Fase 3 feita e os `Jwt__Admin*` reais já no gateway (5.2).
+Pré-condição: Fase 3 feita e os `Jwt__Admin*` reais já no gateway (Fase 4.4).
 
 1. Logue como admin (authority `https://login.microsoftonline.com/<AdminTenantId>`). Em [jwt.ms](https://jwt.ms): `iss = login.microsoftonline.com/.../v2.0` e `roles: ["Admin"]`.
-2. 🧪 Um **cliente CIAM válido** numa rota admin recebe **403** (autenticado, sem a role) — não 401.
+2. Teste a separação: um **cliente CIAM válido** numa rota admin recebe **403** (autenticado, sem a role) — não 401.
 
 ✅ **Checkpoint (AC-13):** login admin via workforce com `roles:["Admin"]`, separado do cliente CIAM. Dois mundos coexistindo, validados pela **mesma** mecânica issuer-agnóstica.
 
+➡️ **Próximo:** o clímax — migrar usuários v1 para o CIAM sem apagar nada.
+
 ---
 
-### Fase 9 — Migração `users` v1 → CIAM (hands-on — o clímax)
+## Fase 8 — Migração `users` v1 → CIAM (SQL — o clímax)
 
-> A coluna `users.entra_oid` já existe (Fase 4) **vazia** — você a **preenche** aqui, de forma aditiva.
+A coluna `users.entra_oid` já existe (Fase 5.2) **vazia** — você a **preenche** aqui, de forma aditiva.
 
-**9.1 Listar os alvos**
+**8.1 Listar os alvos**
 ```sql
 SELECT id, name, email, entra_oid FROM dbo.users WHERE entra_oid IS NULL ORDER BY id;
 ```
 
-**9.2 Sign-up no CIAM com o MESMO email do v1** — para cada conta, faça sign-up self-service no CIAM (Fase 7) com **o email idêntico** ao de `users`.
+**8.2 Sign-up no CIAM com o MESMO email do v1** — para cada conta, faça sign-up self-service no CIAM (Fase 6) com **o email idêntico** ao de `users`. A senha **bcrypt NÃO vai** pro CIAM; o `users.password` fica **intacto** no caminho v1.
 
-> 💡 A senha **bcrypt NÃO vai** pro CIAM (o External ID não importa hash). O usuário cria credencial nova; o `users.password` bcrypt fica **intacto** no caminho v1.
+**8.3 Capturar o `oid` emitido pelo CIAM** — via app (token em jwt.ms/DevTools) **ou** via Portal (Entra admin center → tenant CIAM → **Users** → o usuário → **Object ID**).
 
-**9.3 Capturar o `oid` emitido pelo CIAM** — via app (token em jwt.ms/DevTools) **ou** via Portal (Entra admin center → tenant CIAM → **Users** → o usuário → **Object ID**).
-
-**9.4 Vincular o `oid` ao registro v1 (idempotente)**
+**8.4 Vincular o `oid` ao registro v1 (idempotente)**
 ```sql
 UPDATE dbo.users
-SET    entra_oid = @oid       -- oid do 9.3
+SET    entra_oid = @oid       -- oid do 8.3
 WHERE  email = @email         -- MESMO email do v1
   AND  entra_oid IS NULL;     -- guard de idempotência
 ```
 Idempotência: `WHERE entra_oid IS NULL` (2ª execução = 0 linhas) + índice UNIQUE filtrado `UQ_users_entra_oid` + sign-up nativo do CIAM (email já existente não duplica).
 
-**9.5 Provar a coexistência (o clímax)**
+**8.5 Provar a coexistência (o clímax)**
 ```sql
 SELECT u.id AS user_id_v1, u.email,
        CASE WHEN u.password LIKE '$2%' THEN 'bcrypt-presente' ELSE 'sem-bcrypt' END AS credencial_v1,
@@ -345,9 +361,9 @@ FROM dbo.users u WHERE u.email = @email;
 ```
 Esperado: `status_migracao = COEXISTE (v1 bcrypt + v2 CIAM)`.
 
-✅ **Checkpoint (AC-16):** uma linha de `users` com as **duas identidades** vivas lado a lado. Modernização sem destruição, provada em banco.
+> 💡 **Rollback (aditivo ⇒ trivial):** desfazer um vínculo = `UPDATE dbo.users SET entra_oid = NULL WHERE email = @email;`. Reverter a migration = `DROP INDEX UQ_users_entra_oid ON dbo.users; ALTER TABLE dbo.users DROP COLUMN entra_oid;`. **Nunca** crie backup table no SQL (regra do projeto).
 
-> **Rollback (aditivo ⇒ trivial):** desfazer um vínculo = `UPDATE dbo.users SET entra_oid = NULL WHERE email = @email;`. Reverter a migration = `DROP INDEX UQ_users_entra_oid ON dbo.users; ALTER TABLE dbo.users DROP COLUMN entra_oid;`. **Nunca** crie backup table no SQL (regra do projeto).
+✅ **Checkpoint (AC-16):** uma linha de `users` com as **duas identidades** vivas lado a lado. Modernização sem destruição, provada em banco.
 
 ---
 
@@ -393,25 +409,17 @@ Fork → **Settings → Secrets and variables → Actions**. Os **nomes** abaixo
 
 ---
 
-## Apêndice 2 — Provisionamento da infra (resumo)
-
-Os comandos `az` para criar ACR + Container Apps Environment + Container App estão na seção [Provisionamento da infra](#provisionamento-da-infra-fase-5--à-mão-antes-do-actions), com os placeholders dos **seus** recursos. Lembre: **infra à mão primeiro** (Portal/CLI), **Actions só publica código depois**.
-
-> Para o instrutor: os comandos `az` já executados na demo de referência (com os nomes reais do HML) estão no doc interno `_instrutor-quartas-hml.md` — não distribuído aos alunos.
-
----
-
-## Apêndice 3 — Google OAuth (opcional)
+## Apêndice 2 — Google OAuth (opcional)
 
 > 🟢 Só faça se for oferecer login social do Google (o **Email OTP** da Fase 1.3 já cobre o lab). Faça **depois** de ter o **Tenant ID** do CIAM (Fase 1.1) — os redirect URIs dependem dele.
 
 A interface atual chama-se **Google Auth Platform** (rótulos legados *APIs & services → OAuth consent screen* entre parênteses).
 
 1. [console.cloud.google.com](https://console.cloud.google.com) (conta do lab) → **New Project** (ex.: `fifa2026-ciam-lab`) → **Create** → selecione-o.
-2. **☰ → Google Auth Platform → Branding** *(legado: APIs & services → OAuth consent screen)*. No wizard **Get started**: App name + User support email (Gmail do lab); **Audience = External**; contato → Save.
+2. **☰ → Google Auth Platform → Branding**. No wizard **Get started**: App name + User support email (Gmail do lab); **Audience = External**; contato → Save.
 3. **Audience:** confirme **Publishing status = Testing** e adicione o Gmail do lab em **Test users**.
 4. **Branding → Authorized domains:** adicione **`ciamlogin.com`** e **`microsoftonline.com`**.
-5. **Clients → Create client** → **Web application** (ex.: `entra-ciam-callback`) → em **Authorized redirect URIs** cole **os 7** abaixo, **trocando** `<tenant-ID>` pelo seu `<CiamTenantId>` (Fase 1.1) e `<tenant-subdomain>` pelo seu subdomínio (`<seu-tenant>`):
+5. **Clients → Create client → Web application** (ex.: `entra-ciam-callback`) → em **Authorized redirect URIs** cole **os 7** abaixo, trocando `<tenant-ID>` pelo seu `<CiamTenantId>` e `<tenant-subdomain>` pelo seu `<seu-tenant>`:
 
 ```text
 https://login.microsoftonline.com
@@ -429,24 +437,36 @@ https://<tenant-subdomain>.ciamlogin.com/<tenant-subdomain>.onmicrosoft.com/fede
 
 ---
 
+## Apêndice 3 — Gemini key (adiantamento p/ o último lab)
+
+Adiantamento para o **último lab** (chatbot LLM). Como você cria a conta Google de qualquer jeito (a Fase 1.4 usa o Google como IdP opcional), já deixe a key pronta.
+
+1. Crie/abra uma conta **Gmail exclusiva do lab** (ex.: `fifa2026.lab.<iniciais>@gmail.com`), em janela anônima.
+2. Acesse **https://aistudio.google.com/apikey** logado nessa conta → aceite os termos.
+3. **Create API key → Create API key in new project** → copie e guarde como `GEMINI_API_KEY` (nunca no código). Modelo do lab: `gemini-2.5-flash`.
+
+---
+
 ## Apêndice 4 — Troubleshooting
 
 | Sintoma | Causa provável | Mitigação |
 |---|---|---|
-| **502** em toda chamada | targetPort do ingress ≠ **8080** | ingress targetPort = **8080** ([Provisionamento](#provisionamento-da-infra-fase-5--à-mão-antes-do-actions)) |
-| **502** só em `/purchase` | `FunctionAppF1Url` ausente/errada | apontar p/ `https://<seu-func>.azurewebsites.net` |
+| **502** em toda chamada | targetPort do ingress ≠ **8080** | ingress targetPort = **8080** (Fase 4.3) |
+| **502** só em `/purchase` | `FunctionAppF1Url` ausente/errada | apontar p/ `https://<seu-func>.azurewebsites.net` (Fase 4.4) |
 | Container App `Failed`/CrashLoop | `Jwt__*` ausente/vazia/`"common"` (fail-closed) | 4 `Jwt__*` presentes; placeholder serve p/ subir e fazer o 401 |
 | `/purchase` dá **200** sem token | gateway não fail-closed (config errada) | revisar `AddJwtBearer`/`Jwt__*`; deveria ser **401** |
 | `/health` não responde no 1º hit | cold start (`min-replicas=0`) | aguardar ~20s e repetir |
-| `AADSTS50011` no login do cliente | authority com `microsoftonline.com` | `VITE_CIAM_AUTHORITY` = `<seu-tenant>.ciamlogin.com` (Fase 6) |
+| `AADSTS50011` no login do cliente | authority com `microsoftonline.com` | `VITE_CIAM_AUTHORITY` = `<seu-tenant>.ciamlogin.com` (Fase 5.2) |
+| `AADSTS50011` no login do admin | redirect URI faltando na App Reg workforce | adicionar `https://<seu-frontend>.azurewebsites.net` + `http://localhost:5173` como SPA (Fase 3) |
 | MSAL recusa authority "não confiável" | falta `knownAuthorities` | `knownAuthorities: ['<seu-tenant>.ciamlogin.com']` (já no `authV2.ts`) |
-| **401 "Invalid issuer"** (cliente/admin) | `Jwt__*` placeholder/errado | trocar pelos 4 GUIDs reais (Fase 5.2) |
+| **401 "Invalid issuer"** (cliente/admin) | `Jwt__*` placeholder/errado | trocar pelos 4 GUIDs reais (Fase 4.4) |
 | `roles` ausente no token admin | role não atribuída | Enterprise applications → atribuir `Admin` (Fase 3) |
 | Cliente CIAM em rota admin dá 401 (esperava 403) | policy fixando esquema | `AdminOnly` só `RequireRole("Admin")` (já no código) |
-| `redirect_uri_mismatch` (Google) | redirect URI ≠ callback do Entra | cadastrar **todos** os 7 URIs (Apêndice 3) |
+| `redirect_uri_mismatch` (Google) | redirect URI ≠ callback do Entra | cadastrar **todos** os 7 URIs (Apêndice 2) |
 | Vars do gateway "não encontradas" | esqueceu o prefixo `PHASE04_` | usar `PHASE04_CONTAINERAPP_NAME` / `PHASE04_RESOURCE_GROUP` |
 | Migrations falham por firewall | SQL privado; runner sem regra | o workflow abre/reverte acesso temporário (já tratado no YAML) |
-| Usuário não migra / `so v1` | UPDATE não rodou / email divergente | re-executar UPDATE idempotente (Fase 9.4) |
+| Branch `phase-04-quartas` não aparece no fork | fork desatualizado | **Sync fork** com o upstream (Fase 5.1) |
+| Usuário não migra / `so v1` | UPDATE não rodou / email divergente | re-executar UPDATE idempotente (Fase 8.4) |
 | Só "Use Azure Subscription" (sem trial) | trial 30d quase nunca é ofertado | seguir por **Use Azure Subscription** — free 50K MAU, não expira (Fase 1.1) |
-| Aviso *"Azure subscription is required… SLA"* | tenant sem subscription vinculada | **Home → Billing**: se houver subscription ID, OK; senão **Add Subscription** (Fase 1.2) |
+| Aviso *"Azure subscription is required… SLA"* | aviso informativo, **não é cobrança** | quem criou via **Use Azure Subscription** já está vinculado; nada a fazer (Fase 1.2) |
 | "Insufficient privileges" ao criar o tenant | conta sem Owner / RP não registrado | conta **Global Admin + Owner** + `az provider register -n Microsoft.AzureActiveDirectory` |

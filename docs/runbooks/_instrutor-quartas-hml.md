@@ -15,9 +15,9 @@
 |---|---|---|
 | **Infra + Gateway** | ✅ FEITO | ACR, Container Apps Environment, Container App (ingress externo, targetPort 8080), imagem real deployada, smoke `/health` 200 + `POST /purchase` sem token = 401 — validado ao vivo |
 | **Migrations** | ✅ FEITO | phase-01 + phase-03 + phase-04-ciam-link → `users.entra_oid` criada (vazia) + índice `UQ_users_entra_oid` |
-| **GitHub Vars/Secrets** | ✅ FEITO (exceto `VITE_CIAM_*`) | ver [tabela de Vars/Secrets](#github-varssecrets-valores-reais-do-fork) |
-| **Identidade** | ⏳ PENDENTE | tenant CIAM + user flows + App Reg SPA (cliente) + App Reg admin (workforce) + App Role `Admin` → dá os 4 GUIDs reais `Jwt__*` |
-| **Runtime e2e** | ⏳ PENDENTE | trocar 4 GUIDs placeholder pelos reais, `acao=frontend`, login CIAM/admin, migração `users` v1→CIAM |
+| **GitHub Vars/Secrets** | ✅ FEITO | ver [tabela de Vars/Secrets](#github-varssecrets-valores-reais-do-fork) — `VITE_CIAM_*` setadas em 2026-06-29 |
+| **Identidade** | ✅ FEITO | tenant CIAM + App Reg SPA (`app-ciam`) + App Reg admin (`app-workforce`) → 4 GUIDs reais `Jwt__*` plugados no gateway em 2026-06-29 |
+| **Runtime e2e** | 🔄 EM ANDAMENTO | 4 GUIDs reais no gateway ✅ (rev `--0000003`, `/health` 200 + `/purchase` 401 revalidados); `acao=frontend` disparado; falta cadastrar redirect URIs SPA + login CIAM/admin ao vivo + migração `users` v1→CIAM |
 
 > 🔑 **GUIDs placeholder:** o gateway é **fail-closed** (não sobe sem as 4 `Jwt__*`). Na demo ele subiu com **GUIDs placeholder** — válidos em forma, não são tenants reais. Isso já prova a infra (o `401` sem token funciona). O fluxo com **token real** só fecha depois de trocar os GUIDs reais (ver [comandos `az`](#comandos-az-já-executados-na-demo)).
 
@@ -47,9 +47,9 @@
 | Domínio inicial | **copadomundoazurehml.onmicrosoft.com** | ✅ |
 | Login do cliente | **copadomundoazurehml.ciamlogin.com** | ✅ |
 | **Tenant ID (CIAM)** = `Jwt__CiamTenantId` | **`872736f9-b166-4e47-b881-52e4aa3fb3e6`** | ✅ |
-| App Reg SPA (cliente) = `Jwt__CiamClientId` | `student-<iniciais>-v2` | ⏳ pendente |
-| App Reg admin (workforce) = `Jwt__AdminClientId` | `student-<iniciais>-admin` | ⏳ pendente |
-| Tenant ID workforce = `Jwt__AdminTenantId` | (do tenant workforce) | ⏳ pendente |
+| App Reg SPA (cliente) = `Jwt__CiamClientId` | **`app-ciam`** → **`123ce4f0-d930-4b6a-ab34-b78b6c7012eb`** | ✅ |
+| App Reg admin (workforce) = `Jwt__AdminClientId` | **`app-workforce`** → **`a827c1e2-028f-4de6-8404-c8c28033d335`** | ✅ |
+| Tenant ID workforce = `Jwt__AdminTenantId` | **`7de09cb8-6a1e-4646-8df8-70a9bc2ba649`** | ✅ |
 
 > 💡 São **DOIS** tenants e **DOIS** client IDs: o **CIAM** (cliente, `*.ciamlogin.com`) e o **workforce** (admin). Anote os dois separadamente.
 
@@ -72,8 +72,8 @@ Fork `tftec-guilherme/fifa2026-tickets-dev` → **Settings → Secrets and varia
 | `GATEWAY_V2_URL` | `https://ca-gateway-dev-tk-cin-001.blueplant-f8efd93e.centralindia.azurecontainerapps.io` | frontend (→ `VITE_GATEWAY_V2_URL`) | ✅ existe |
 | `BACKEND_URL` | `https://app-dev-tk-bend-cin-001.azurewebsites.net` | frontend | ✅ existe |
 | `FUNCTION_V2_URL` | `https://func-dev-tk-cin-001.azurewebsites.net` | frontend (→ `VITE_FUNCTION_V2_URL`) | ✅ existe |
-| `VITE_CIAM_AUTHORITY` | `https://copadomundoazurehml.ciamlogin.com/` | frontend | ⏳ pendente (tenant CIAM) |
-| `VITE_CIAM_CLIENT_ID` | Client ID da App Reg SPA (Fase 2) | frontend | ⏳ pendente (tenant CIAM) |
+| `VITE_CIAM_AUTHORITY` | `https://copadomundoazurehml.ciamlogin.com/` | frontend | ✅ setada (2026-06-29) |
+| `VITE_CIAM_CLIENT_ID` | `123ce4f0-d930-4b6a-ab34-b78b6c7012eb` (App Reg `app-ciam`) | frontend | ✅ setada (2026-06-29) |
 
 > ⚠️ As vars do gateway têm prefixo **`PHASE04_`** — é exatamente o que o YAML lê. `SQL_SERVER`/`RESOURCE_GROUP` têm fallback para defaults internos do YAML, mas mantê-las explícitas é mais claro.
 
@@ -101,14 +101,16 @@ Fork `tftec-guilherme/fifa2026-tickets-dev` → **Settings → Secrets and varia
 
 As 6 env vars do Container App `ca-gateway-dev-tk-cin-001` na demo:
 
-| App Setting | Valor atual (demo) | Valor final |
+| App Setting | Valor REAL (plugado 2026-06-29, rev `--0000003`) | Origem |
 |---|---|---|
-| `Jwt__CiamTenantId` | GUID **placeholder** | `872736f9-b166-4e47-b881-52e4aa3fb3e6` (CIAM real) |
-| `Jwt__CiamClientId` | GUID **placeholder** | Client ID da App Reg SPA (Fase 2) |
-| `Jwt__AdminTenantId` | GUID **placeholder** | Tenant ID do workforce (Fase 3) |
-| `Jwt__AdminClientId` | GUID **placeholder** | Client ID da App Reg admin (Fase 3) |
-| `FunctionAppF1Url` | `https://func-dev-tk-cin-001.azurewebsites.net` | (já real — sem ela `/purchase` dá 502) |
-| `Gateway__FrontendOrigin` | `https://app-dev-tk-fend-cin-001.azurewebsites.net` | (já real — CORS restrito ao front) |
+| `Jwt__CiamTenantId` | `872736f9-b166-4e47-b881-52e4aa3fb3e6` | tenant CIAM `copa-external-id` |
+| `Jwt__CiamClientId` | `123ce4f0-d930-4b6a-ab34-b78b6c7012eb` | App Reg SPA **`app-ciam`** |
+| `Jwt__AdminTenantId` | `7de09cb8-6a1e-4646-8df8-70a9bc2ba649` | tenant workforce |
+| `Jwt__AdminClientId` | `a827c1e2-028f-4de6-8404-c8c28033d335` | App Reg admin **`app-workforce`** |
+| `FunctionAppF1Url` | `https://func-dev-tk-cin-001.azurewebsites.net` | (mantida — sem ela `/purchase` dá 502) |
+| `Gateway__FrontendOrigin` | `https://app-dev-tk-fend-cin-001.azurewebsites.net` | (mantida — CORS restrito ao front) |
+
+> ✅ **GUIDs reais plugados (2026-06-29):** os 4 placeholders foram trocados pelos GUIDs reais via `az containerapp update` (mantendo `FunctionAppF1Url` e `Gateway__FrontendOrigin`). Nova revisão `ca-gateway-dev-tk-cin-001--0000003` (`provisioningState=Succeeded`); revalidado ao vivo: `/health` → **200**, `POST /purchase` sem token → **401** (gateway continua subindo fail-closed com os GUIDs reais).
 
 > 🔒 **Duplo underscore:** `Jwt:CiamTenantId` em variável de ambiente vira `Jwt__CiamTenantId`. A connection string do SQL **NÃO** vai no gateway (fica na Function).
 > **Discovery que o gateway monta:** authority `https://copadomundoazurehml.ciamlogin.com/872736f9-b166-4e47-b881-52e4aa3fb3e6`, issuer `…/v2.0`; admin `https://login.microsoftonline.com/<AdminTenantId>/v2.0`. Validação fail-closed, `ClockSkew=0`, `ValidIssuer`/`ValidAudiences` explícitos.
@@ -162,6 +164,22 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://${FQDN}/purchase" \
   -H "Content-Type: application/json" -d '{"matchId":1,"category":"VIP","userId":1,"quantity":1}'
 # → 401   (fail-closed: sem token o gateway recusa)
 ```
+
+---
+
+## Redirect URIs da App Reg SPA `app-ciam` (CRÍTICO p/ o login MSAL)
+
+O MSAL (`src/lib/authV2.ts`) usa `redirectUri = import.meta.env.VITE_ENTRA_REDIRECT_URI ?? window.location.origin`. Como o workflow `lab-quartas-de-final.yml` **NÃO** define `VITE_ENTRA_REDIRECT_URI` no build do frontend, o redirect cai em **`window.location.origin`** (origem da página, sem path nem barra final).
+
+Cadastre na App Reg **`app-ciam`** → **Authentication → Platform → Single-page application (SPA)** EXATAMENTE estas duas URIs:
+
+```text
+https://app-dev-tk-fend-cin-001.azurewebsites.net
+http://localhost:5173
+```
+
+> ⚠️ **Plataforma SPA, não Web.** MSAL.js (PKCE, browser) exige a plataforma **SPA**; cadastrar como "Web" causa `AADSTS9002326` (cross-origin token redemption). Sem barra final e sem path — `window.location.origin` nunca inclui path. A primeira atende o frontend deployado (`app-dev-tk-fend-cin-001.azurewebsites.net`); a segunda atende `npm run dev` local (Vite na 5173).
+> 💡 Se algum dia o frontend rodar em outra origem (ex.: domínio custom), basta adicionar essa nova origem aqui — ou setar a var `VITE_ENTRA_REDIRECT_URI` no build com a URL completa.
 
 ---
 
